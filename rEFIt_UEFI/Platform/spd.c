@@ -61,7 +61,7 @@ CHAR8 *spd_memory_types[] =
 	"",				/* 09h  Undefined */
 	"",				/* 0Ah  Undefined */
 	"DDR3 SDRAM",	/* 0Bh  SDRAM DDR 3 */
-  "DDR4 SDRAM" /* 0Ch SDRAM DDR 4 */
+    "DDR4 SDRAM"    /* 0Ch  SDRAM DDR 4 */
 };
 
 #define UNKNOWN_MEM_TYPE 2
@@ -79,7 +79,7 @@ UINT8 spd_mem_to_smbios[] =
 	UNKNOWN_MEM_TYPE,		/* 09h  Undefined */
 	UNKNOWN_MEM_TYPE,		/* 0Ah  Undefined */
 	SMB_MEM_TYPE_DDR3,	/* 0Bh  SDRAM DDR 3 */
-  SMB_MEM_TYPE_DDR4   /* 0Ch  SDRAM DDR 4 */
+    SMB_MEM_TYPE_DDR4   /* 0Ch  SDRAM DDR 4 */
 };
 #define SPD_TO_SMBIOS_SIZE (sizeof(spd_mem_to_smbios)/sizeof(UINT8))
 
@@ -127,105 +127,153 @@ UINT8 spd_indexes[] = {
 	SPD_NUM_BANKS_PER_SDRAM,
 	7,8,9,10,11,12,64, /* TODO: give names to these values */
 	95,96,97,98, 122,123,124,125, /* UIS */
-  /* XMP */
-  SPD_XMP_SIG1,
-  SPD_XMP_SIG2,
-  SPD_XMP_PROFILES,
-  SPD_XMP_VERSION,
-  SPD_XMP_PROF1_DIVISOR,
-  SPD_XMP_PROF1_DIVIDEND,
-  SPD_XMP_PROF2_DIVISOR,
-  SPD_XMP_PROF2_DIVIDEND,
-  SPD_XMP_PROF1_RATIO,
-  SPD_XMP_PROF2_RATIO
+    /* XMP */
+    SPD_XMP_SIG1,
+    SPD_XMP_SIG2,
+    SPD_XMP_PROFILES,
+    SPD_XMP_VERSION,
+    SPD_XMP_PROF1_DIVISOR,
+    SPD_XMP_PROF1_DIVIDEND,
+    SPD_XMP_PROF2_DIVISOR,
+    SPD_XMP_PROF2_DIVIDEND,
+    SPD_XMP_PROF1_RATIO,
+    SPD_XMP_PROF2_RATIO
 };
 #define SPD_INDEXES_SIZE (sizeof(spd_indexes) / sizeof(INT8))
 
-/** Read one byte from i2c, used for reading SPD */
+#define DDR4_SPD_MEMORY_PAGE_0_SELECT_CMD 0x6C
+#define DDR4_SPD_MEMORY_PAGE_1_SELECT_CMD 0x6E
 
-UINT8 smb_read_byte(UINT32 base, UINT8 adr, UINT16 cmd)
-{
-  //   INTN l1, h1, l2, h2;
-  UINT64 t, t1, t2;
-  
-  if (smbIntel) {
+UINT16 reset_smb_intel(UINT32 base){
+    UINT64 t, t1, t2;
+    
     IoWrite8(base + SMBHSTSTS, 0x1f);				// reset SMBus Controller
     IoWrite8(base + SMBHSTDAT, 0xff);
     
     t1 = AsmReadTsc(); //rdtsc(l1, h1);
     while ( IoRead8(base + SMBHSTSTS) & 0x01) {   // wait until read
-      t2 = AsmReadTsc(); //rdtsc(l2, h2);
-      t = DivU64x64Remainder((t2 - t1),
-                             DivU64x32(gCPUStructure.TSCFrequency, 1000),
-                             0);
-      if (t > 5)
-        return 0xFF;                  // break
+        t2 = AsmReadTsc(); //rdtsc(l2, h2);
+        t = DivU64x64Remainder((t2 - t1),
+                               DivU64x32(gCPUStructure.TSCFrequency, 1000),
+                               0);
+        if (t > 5){
+            return 0xFF;                  // break
+        }
     }
     
-    IoWrite16(base + SMBHSTCMD, cmd);
-    IoWrite8(base + SMBHSTADD, (adr << 1) | 0x01 );
-    IoWrite8(base + SMBHSTCNT, 0x48 );
+    return 0;
+}
+
+VOID smb_set_memory_page(UINT32 base, UINT8 cmd){
+    
+    UINT64 t, t1, t2;
+    
+    reset_smb_intel(base);
+    
+    IoWrite8( base + SMBHSTCMD, cmd );
+    IoWrite8( base + SMBHSTADD, cmd );
+    IoWrite8( base + SMBHSTCNT, 0x48 );
     
     t1 = AsmReadTsc();
-    
-    while (!( IoRead8(base + SMBHSTSTS) & 0x02)) {	// wait til command finished
-      t2 = AsmReadTsc();
-      t = DivU64x64Remainder((t2 - t1), DivU64x32(gCPUStructure.TSCFrequency, 1000), 0);
-      if (t > 5)
-        break;									// break after 5ms
+    while (1) {	// wait til command finished
+        t2 = AsmReadTsc();
+        t = DivU64x64Remainder((t2 - t1), DivU64x32(gCPUStructure.TSCFrequency, 1000), 0);
+        if (t > 30)
+            break;									// break after 5ms
     }
-    return IoRead8(base + SMBHSTDAT);
-  }
-  else {
-    IoWrite8(base + SMBHSTSTS_NV, 0x1f);			// reset SMBus Controller
-    IoWrite8(base + SMBHSTDAT_NV, 0xff);
+}
+
+/** Read one byte from i2c, used for reading SPD */
+
+UINT8 smb_read_byte(UINT32 base, UINT8 adr, UINT16 cmd)
+{
+    UINT64 t, t1, t2;
+    UINT16 ret;
+  
+    if (smbIntel) {
+        
+        ret = reset_smb_intel(base);
+        if(ret==0xFF)
+            return ret;
     
-    t1 = AsmReadTsc(); //rdtsc(l1, h1);
-    while ( IoRead8(base + SMBHSTSTS_NV) & 0x01) {    // wait until read
-      t2 = AsmReadTsc(); //rdtsc(l2, h2);
-      t = DivU64x64Remainder((t2 - t1),
-                             DivU64x32(gCPUStructure.TSCFrequency, 1000),
-                             0);
-      if (t > 5)
-        return 0xFF;                  // break
+        IoWrite16(base + SMBHSTCMD, cmd);
+        IoWrite8(base + SMBHSTADD, (adr << 1) | 0x01 );
+        IoWrite8(base + SMBHSTCNT, 0x48 );
+        
+        t1 = AsmReadTsc();
+        
+        while (!( IoRead8(base + SMBHSTSTS) & 0x02)) {	// wait til command finished
+          t2 = AsmReadTsc();
+          t = DivU64x64Remainder((t2 - t1), DivU64x32(gCPUStructure.TSCFrequency, 1000), 0);
+          if (t > 5)
+            break;									// break after 5ms
+        }
+          
+        return IoRead8(base + SMBHSTDAT);
+    } else {
+        
+        IoWrite8(base + SMBHSTSTS_NV, 0x1f);			// reset SMBus Controller
+        IoWrite8(base + SMBHSTDAT_NV, 0xff);
+        
+        t1 = AsmReadTsc(); //rdtsc(l1, h1);
+        while ( IoRead8(base + SMBHSTSTS_NV) & 0x01) {    // wait until read
+          t2 = AsmReadTsc(); //rdtsc(l2, h2);
+          t = DivU64x64Remainder((t2 - t1),
+                                 DivU64x32(gCPUStructure.TSCFrequency, 1000),
+                                 0);
+          if (t > 5)
+            return 0xFF;                  // break
+        }
+        
+        IoWrite8(base + SMBHSTSTS_NV, 0x00); // clear status register
+        IoWrite16(base + SMBHSTCMD_NV, cmd);
+        IoWrite8(base + SMBHSTADD_NV, (adr << 1) | 0x01 );
+        IoWrite8(base + SMBHPRTCL_NV, 0x07 );
+        t1 = AsmReadTsc();
+        
+        while (!( IoRead8(base + SMBHSTSTS_NV) & 0x9F)) {		// wait till command finished
+          t2 = AsmReadTsc();
+          t = DivU64x64Remainder((t2 - t1),
+                                 DivU64x32(gCPUStructure.TSCFrequency, 1000),
+                                 0);
+          if (t > 5)
+            break; // break after 5ms
+        }
+        return IoRead8(base + SMBHSTDAT_NV);
     }
-    
-    IoWrite8(base + SMBHSTSTS_NV, 0x00); // clear status register
-    IoWrite16(base + SMBHSTCMD_NV, cmd);
-    IoWrite8(base + SMBHSTADD_NV, (adr << 1) | 0x01 );
-    IoWrite8(base + SMBHPRTCL_NV, 0x07 );
-    t1 = AsmReadTsc();
-    
-    while (!( IoRead8(base + SMBHSTSTS_NV) & 0x9F)) {		// wait till command finished
-      t2 = AsmReadTsc();
-      t = DivU64x64Remainder((t2 - t1),
-                             DivU64x32(gCPUStructure.TSCFrequency, 1000),
-                             0);
-      if (t > 5)
-        break; // break after 5ms
-    }
-    return IoRead8(base + SMBHSTDAT_NV);
-  }
 }
 
 /* SPD i2c read optimization: prefetch only what we need, read non prefetcheable bytes on the fly */
 #define READ_SPD(spd, base, slot, x) spd[x] = smb_read_byte(base, 0x50 + slot, x)
 
-
 /** Read from spd *used* values only*/
 VOID init_spd(UINT8* spd, UINT32 base, UINT8 slot)
 {
-	INTN i;
-	for (i=0; i< SPD_INDEXES_SIZE; i++) {
-		READ_SPD(spd, base, slot, spd_indexes[i]);
-  }
-
-  if (spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR4) {
-    for (i = SPD_DDR4_MANUFACTURER_ID_CODE; i < SPD_DDR4_REVISION_CODE; i++) {
-      READ_SPD(spd, base, slot, (UINT16)i);
+    UINT16 i;
+    
+    DBG("__init_spd()__-->");
+    
+    smb_set_memory_page(base,DDR4_SPD_MEMORY_PAGE_0_SELECT_CMD);
+    
+    for (i=0; i < 255; i++) {
+        READ_SPD(spd, base, slot, i);
+        DBG("SPD[%d]: 0x%x\n",i, spd[i]);
     }
-  }
-
+    
+    if (spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR4) {
+        
+        smb_set_memory_page(base,DDR4_SPD_MEMORY_PAGE_1_SELECT_CMD);
+        
+        for (; i < 384; i++) {
+            READ_SPD(spd, base, slot, i);
+            DBG("SPD[%d]: 0x%x\n",i, spd[i]);
+        }
+        
+        smb_set_memory_page(base,DDR4_SPD_MEMORY_PAGE_0_SELECT_CMD);
+        
+    }
+    
+    DBG("<--__init_spd()__");
 }
 
 // Get Vendor Name from spd, 3 cases handled DDR3, DDR4 and DDR2,
@@ -237,13 +285,14 @@ CHAR8* getVendorName(RAM_SLOT_INFO* slot, UINT8 *spd, UINT32 base, UINT8 slot_nu
   INTN  i = 0;
   //UINT8 * spd = (UINT8 *) slot->spd;
   if (spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR4) { // DDR4
-    bank = spd[SPD_DDR4_MANUFACTURER_ID_CODE + 1]; 
-    code = spd[SPD_DDR4_MANUFACTURER_ID_CODE];
-    for (i=0; i < VEN_MAP_SIZE; i++) {
-      if (bank==vendorMap[i].bank && code==vendorMap[i].code) {
-        return vendorMap[i].name;
+      bank = spd[SPD_DDR4_MANUFACTURER_ID_BANK] & 0x7F;
+      code = spd[SPD_DDR4_MANUFACTURER_ID_CODE];
+      
+      for (i=0; i < VEN_MAP_SIZE; i++) {
+          if (bank==vendorMap[i].bank && code==vendorMap[i].code) {
+              return vendorMap[i].name;
+          }
       }
-    }
   } else if (spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR3) { // DDR3
     bank = (spd[SPD_DDR3_MEMORY_BANK] & 0x07f); // constructors like Patriot use b7=1
     code = spd[SPD_DDR3_MEMORY_CODE];
@@ -282,10 +331,24 @@ CHAR8* getVendorName(RAM_SLOT_INFO* slot, UINT8 *spd, UINT32 base, UINT8 slot_nu
 UINT16 getDDRspeedMhz(UINT8 * spd)
 {
   if (spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR4) {
-    DBG("Sorry, DDR4 is not fully implemented! Use settings in config.plist\n");
-    return 3200;
-  }
-  if ((spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR2) ||
+      
+      switch(spd[SPD_DDR4_MINIMUM_CYCLE_TIME]) {
+          case 0x0A:
+              return 1600;
+          case 0x09:
+              return 1866;
+          case 0x08:
+              return 2133;
+          case 0x07:
+              return 2400;
+          case 0x06:
+              return 2666;
+          case 0x05:
+              return 3200;
+          default:
+              return 2133;
+      }
+  } else if ((spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR2) ||
       (spd[SPD_MEMORY_TYPE] == SPD_MEMORY_TYPE_SDRAM_DDR)) {
     switch(spd[9]) {
       case 0x50:
@@ -409,12 +472,12 @@ CHAR8* getDDRSerial(UINT8* spd)
   CHAR8* asciiSerial; //[16];
   asciiSerial = AllocatePool(17);
   if (spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR4) { // DDR4
-    AsciiSPrint(asciiSerial, 17, "%2X%2X%2X%2X%2X%2X%2X%2X", SMST(325) /*& 0x7*/, SLST(325), SMST(326), SLST(326), SMST(327), SLST(327), SMST(328), SLST(328));
+    AsciiSPrint(asciiSerial, 17, "%X%X%X%X%X%X%X%X", SMST(325), SLST(325), SMST(326), SLST(326), SMST(327), SLST(327), SMST(328), SLST(328));
   } else if (spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR3) { // DDR3
-    AsciiSPrint(asciiSerial, 17, "%2X%2X%2X%2X%2X%2X%2X%2X", SMST(122) /*& 0x7*/, SLST(122), SMST(123), SLST(123), SMST(124), SLST(124), SMST(125), SLST(125));
+    AsciiSPrint(asciiSerial, 17, "%2X%2X%2X%2X%2X%2X%2X%2X", SMST(122), SLST(122), SMST(123), SLST(123), SMST(124), SLST(124), SMST(125), SLST(125));
   } else if (spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR2 ||
              spd[SPD_MEMORY_TYPE]==SPD_MEMORY_TYPE_SDRAM_DDR) {  // DDR2 or DDR    
-    AsciiSPrint(asciiSerial, 17, "%2X%2X%2X%2X%2X%2X%2X%2X", SMST(95) /*& 0x7*/, SLST(95), SMST(96), SLST(96), SMST(97), SLST(97), SMST(98), SLST(98));
+    AsciiSPrint(asciiSerial, 17, "%2X%2X%2X%2X%2X%2X%2X%2X", SMST(95), SLST(95), SMST(96), SLST(96), SMST(97), SLST(97), SMST(98), SLST(98));
   } else {
     AsciiStrCpy(asciiSerial, "0000000000000000");
   }
@@ -458,12 +521,12 @@ CHAR8* getDDRPartNum(UINT8* spd, UINT32 base, UINT8 slot)
 /** Read from smbus the SPD content and interpret it for detecting memory attributes */
 VOID read_smb(EFI_PCI_IO_PROTOCOL *PciIo)
 {
-//	EFI_STATUS	Status;
-  UINT16      speed;
-  UINT8       i;// spd_size, spd_type;
-  UINT32			base, mmio, hostc;
+    //	EFI_STATUS	Status;
+    UINT16      speed;
+    UINT8       i;// spd_size, spd_type;
+    UINT32			base, mmio, hostc;
 	UINT16			Command;
-  //RAM_SLOT_INFO*  slot;
+    //RAM_SLOT_INFO*  slot;
 	//BOOLEAN			fullBanks;
 	UINT8*			spdbuf;
 	UINT16			vid, did;
@@ -553,6 +616,7 @@ VOID read_smb(EFI_PCI_IO_PROTOCOL *PciIo)
     READ_SPD(spdbuf, base, i, SPD_MEMORY_TYPE);
     if (spdbuf[SPD_MEMORY_TYPE] == 0xFF) continue;
     // Copy spd data into buffer
+      
     init_spd(spdbuf, base, i);
     DBG("SPD[%d]: Type %d @0x%x \n", i, spdbuf[SPD_MEMORY_TYPE], 0x50 + i);
     switch (spdbuf[SPD_MEMORY_TYPE])  {
@@ -586,8 +650,20 @@ VOID read_smb(EFI_PCI_IO_PROTOCOL *PciIo)
       case SPD_MEMORY_TYPE_SDRAM_DDR4:
         
         gRAM.SPD[i].Type = MemoryTypeDdr4;
-        gRAM.SPD[i].ModuleSize = spdbuf[4] & 0x0f;
-        gRAM.SPD[i].ModuleSize = (1 << gRAM.SPD[i].ModuleSize) * 256;
+            // size = ((u64)rows * cols * banks * ranks) * bit;
+            // (spdbuf[4] & 0x30) >> 4 : bank address bits
+            // (spdbuf[4] & 0xC0) >> 6 : bank group bits
+            // banks = (4 << addressbits) * (1 << bank group bits)
+            // ((spdbuf[12] &  0x38) >> 3) :ranks
+            // (((spdbuf[5]  &  0x38) >> 3)+12) :rows
+            // ((spdbuf[5]  &  0x7)+9) : cols
+        gRAM.SPD[i].ModuleSize = (
+            (((UINT64)1 << (12 + ((spdbuf[ 5] & 0x38) >> 3))) *
+            (1 << (9 +  ( spdbuf[ 5] & 0x07))) *
+            (1 +  ((spdbuf[12] & 0x38) >> 3)) *
+            (4 << ((spdbuf[ 4] & 0x30) >> 4)) *
+            (1 << ((spdbuf[ 4] & 0xC0) >> 6))) >> (20 - 3)
+        );
         
         break;
       
